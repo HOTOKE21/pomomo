@@ -149,6 +149,7 @@ function createRoom() {
     lastEmptyAt: Date.now(),
     users: new Map(), // userId -> { userId, username, sockets:Set, sessionToken, isHost, isGuest }
     joinQueue: [],    // pending join requests awaiting host approval
+    pendingSuggestions: new Map(), // suggestionId -> { trackInfo, fromUserId, fromUsername }
     // Music sync state (host-authoritative)
     currentTrack: null,
     isPlaying: false,
@@ -246,6 +247,7 @@ function loadPersistedRooms() {
         lastEmptyAt: r.lastEmptyAt,
         users: new Map(),
         joinQueue: [],
+        pendingSuggestions: new Map(),
         currentTrack: r.currentTrack || null,
         isPlaying: false,
         position: r.position || 0,
@@ -406,11 +408,9 @@ function handleLeaveRoom(socket) {
 }
 
 function handlePlaybackAction(socket, room, payload) {
-  if (room.hostId !== socket.userId) {
-    send(socket, 'error', { code: 'not_host', message: 'Only the host can control playback' });
-    return;
-  }
   if (!payload) return;
+  // Party mode: anyone can drive playback. Last tap wins; the server is the
+  // single serializer so simultaneous taps resolve deterministically.
   const serverTime = Date.now();
   const revision = nextRevision(room);
 
@@ -498,11 +498,8 @@ function handlePlaybackAction(socket, room, payload) {
 }
 
 function handleStudyAction(socket, room, payload) {
-  if (room.hostId !== socket.userId) {
-    send(socket, 'error', { code: 'not_host', message: 'Only the host can control the study session' });
-    return;
-  }
   if (!payload || !payload.action) return;
+  // Party mode: anyone can control the shared study session.
   const now = Date.now();
   const s = room.study;
   const remaining = studyRemainingMs(room);
@@ -674,14 +671,13 @@ wss.on('connection', (socket) => {
           break;
         case 'approve_join': {
           if (!room) break;
-          if (room.hostId !== socket.userId) break;
           const entry = room.joinQueue.find((j) => j.userId === (msg.payload && msg.payload.userId));
           if (entry) approveJoin(socket, room, entry);
           else send(socket, 'error', { code: 'unknown_user', message: 'No such join request' });
           break;
         }
         case 'reject_join': {
-          if (!room || room.hostId !== socket.userId) break;
+          if (!room) break;
           const entry = room.joinQueue.find((j) => j.userId === (msg.payload && msg.payload.userId));
           room.joinQueue = room.joinQueue.filter((j) => j !== entry);
           if (entry && entry.socket.readyState === 1) {
@@ -738,25 +734,61 @@ wss.on('connection', (socket) => {
         case 'suggest_track': {
           if (!room || !msg.payload || !msg.payload.trackInfo) break;
           if (socket.userId === room.hostId) break; // host doesn't suggest
+          const fromUser = room.users.get(socket.userId);
+          const suggestionId = 'sug_' + crypto.randomBytes(6).toString('hex');
+          room.pendingSuggestions.set(suggestionId, {
+            trackInfo: msg.payload.trackInfo,
+            fromUserId: socket.userId,
+            fromUsername: (fromUser && fromUser.username) || 'Guest',
+          });
           const host = room.users.get(room.hostId);
           if (host) {
-            const suggestionId = 'sug_' + crypto.randomBytes(6).toString('hex');
             for (const s of host.sockets) {
               send(s, 'suggestion_received', {
                 suggestionId,
                 fromUserId: socket.userId,
-                fromUsername: (room.users.get(socket.userId) || {}).username || 'Guest',
+                fromUsername: (fromUser && fromUser.username) || 'Guest',
                 trackInfo: msg.payload.trackInfo,
               });
             }
           }
+          log(`room ${room.code} suggestion from ${(fromUser && fromUser.username) || '?'}`);
           break;
         }
         case 'approve_suggestion': {
-          // Minimal: host approval inserts next in queue and broadcasts.
           if (!room || room.hostId !== socket.userId) break;
-          // The full suggestion store is intentionally omitted; the queue add
-          // flows through the normal playback_action from the approving host.
+          const sugId = msg.payload && msg.payload.suggestionId;
+          const sug = room.pendingSuggestions.get(sugId);
+          if (!sug) break;
+          room.pendingSuggestions.delete(sugId);
+
+          // Insert next after the current track and broadcast the new queue.
+          room.queue.unshift(TrackInfo.create(sug.trackInfo));
+          nextRevision(room);
+          broadcast(room, 'sync_playback', {
+            action: 'queue_add',
+            trackInfo: sug.trackInfo,
+            insertNext: true,
+            queue: room.queue,
+            serverTime: Date.now(),
+            revision: room.revision,
+          });
+
+          // Tell everyone (clients use this to dismiss their UI/notification).
+          broadcast(room, 'suggestion_approved', { suggestionId: sugId, trackInfo: sug.trackInfo });
+          log(`room ${room.code} suggestion approved -> queue`);
+          break;
+        }
+        case 'reject_suggestion': {
+          if (!room || room.hostId !== socket.userId) break;
+          const rejId = msg.payload && msg.payload.suggestionId;
+          const sugInfo = room.pendingSuggestions.get(rejId);
+          if (!sugInfo) break;
+          room.pendingSuggestions.delete(rejId);
+          broadcast(room, 'suggestion_rejected', {
+            suggestionId: rejId,
+            reason: (msg.payload && msg.payload.reason) || '',
+          });
           break;
         }
         default:
