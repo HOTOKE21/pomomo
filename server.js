@@ -47,7 +47,6 @@ root.resolvePath = (origin, target) => {
 root.loadSync('listentogether.proto', { keepCase: false });
 root.resolveAll();
 
-const proto = root.lookupType('listentogether');
 const Envelope = root.lookupType('listentogether.Envelope');
 const RoomState = root.lookupType('listentogether.RoomState');
 const StudyState = root.lookupType('listentogether.StudyState');
