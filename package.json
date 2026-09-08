@@ -1,0 +1,17 @@
+{
+  "name": "pomomo-room-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebSocket room server for Pomomo: synced music + study sessions (pomodoro/timer/stopwatch).",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "protobufjs": "^7.2.5",
+    "ws": "^8.14.2"
+  }
+}
