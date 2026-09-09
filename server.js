@@ -137,6 +137,7 @@ function defaultStudy() {
     updatedAt: 0,
     completedFocus: 0,
     revision: 0,
+    finished: false,
   };
 }
 
@@ -195,6 +196,7 @@ function buildRoomState(room) {
       updatedAt: room.study.updatedAt,
       completedFocus: room.study.completedFocus,
       revision: room.study.revision,
+      finished: !!room.study.finished,
     }),
   };
   if (room.currentTrack) state.currentTrack = room.currentTrack;
@@ -583,6 +585,7 @@ function handleStudyAction(socket, room, payload) {
   }
 
   s.updatedAt = now;
+  s.finished = false; // any manual action silences the end-of-phase alert
   broadcastStudyState(room);
   log(`room ${room.code} study ${payload.action} (mode=${s.mode} running=${s.isRunning})`);
 }
@@ -600,6 +603,7 @@ function broadcastStudyState(room) {
       updatedAt: room.study.updatedAt,
       completedFocus: room.study.completedFocus,
       revision,
+      finished: !!room.study.finished,
     }),
     serverTime: Date.now(),
     revision,
@@ -827,22 +831,39 @@ setInterval(() => {
   }
 }, 30000);
 
-// Room cleanup + study-completion broadcast
+// Room cleanup + study ticking / completion
 setInterval(() => {
   const now = Date.now();
   for (const room of rooms.values()) {
-    // Auto-advance running study sessions that hit zero (broadcast refresh)
     const s = room.study;
     if (s.isRunning && s.mode !== 'stopwatch' && s.anchorServerMs) {
       const remaining = studyRemainingMs(room);
       if (remaining <= 0) {
-        // Phase finished: stop and let the host advance (or notify clients once)
+        // Phase finished: stop, flag it (clients play the end sound) and
+        // auto-advance the pomodoro to the next phase, paused and ready.
         s.baseRemainingMs = 0;
         s.isRunning = false;
         s.anchorServerMs = 0;
         s.updatedAt = now;
+        s.finished = true;
+        if (s.mode === 'pomodoro') {
+          if (s.phase === 'focus') {
+            s.completedFocus += 1;
+            s.phase = s.completedFocus % 4 === 0 ? 'long_break' : 'break';
+            s.durationMs = s.phase === 'long_break' ? 15 * 60 * 1000 : 5 * 60 * 1000;
+          } else {
+            s.phase = 'focus';
+            s.durationMs = 25 * 60 * 1000;
+          }
+          s.baseRemainingMs = s.durationMs;
+        }
         broadcastStudyState(room);
         log(`room ${room.code} study phase finished (${s.mode}/${s.phase})`);
+      } else if (!s.lastTickBroadcast || now - s.lastTickBroadcast >= 1000) {
+        // Keep the countdown live: push a fresh anchor every second so every
+        // client recomputes from server time without user interaction.
+        s.lastTickBroadcast = now;
+        broadcastStudyState(room);
       }
     }
     if (room.users.size === 0 && room.lastEmptyAt && now - room.lastEmptyAt > ROOM_TTL_MS) {

@@ -44,6 +44,7 @@ message StudyState {
   int64 updated_at = 7;        // server time of the last change
   int32 completed_focus = 8;   // completed focus rounds (pomodoro)
   uint64 revision = 9;
+  bool finished = 10;          // phase just hit zero — clients play the end sound
 }
 
 // Room state
