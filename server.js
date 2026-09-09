@@ -546,7 +546,16 @@ function handleStudyAction(socket, room, payload) {
       break;
     case 'pause':
       if (s.isRunning) {
-        s.baseRemainingMs = remaining;
+        if (s.mode === 'stopwatch') {
+          // Elapsed time is stored negated (shared anchor formula:
+          // display = −baseRemaining while not running). Must come from the
+          // raw unclamped delta — the clamped helper would freeze it at 0.
+          s.baseRemainingMs = s.anchorServerMs > 0
+            ? Math.min(0, s.baseRemainingMs - (now - s.anchorServerMs))
+            : s.baseRemainingMs;
+        } else {
+          s.baseRemainingMs = remaining;
+        }
         s.isRunning = false;
         s.anchorServerMs = 0;
       }
@@ -836,9 +845,9 @@ setInterval(() => {
   const now = Date.now();
   for (const room of rooms.values()) {
     const s = room.study;
-    if (s.isRunning && s.mode !== 'stopwatch' && s.anchorServerMs) {
+    if (s.isRunning && s.anchorServerMs) {
       const remaining = studyRemainingMs(room);
-      if (remaining <= 0) {
+      if (s.mode !== 'stopwatch' && remaining <= 0) {
         // Phase finished: stop, flag it (clients play the end sound) and
         // auto-advance the pomodoro to the next phase, paused and ready.
         s.baseRemainingMs = 0;
