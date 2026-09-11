@@ -45,6 +45,10 @@ message StudyState {
   int32 completed_focus = 8;   // completed focus rounds (pomodoro)
   uint64 revision = 9;
   bool finished = 10;          // phase just hit zero — clients play the end sound
+  int64 focus_ms = 11;         // pomodoro config
+  int64 break_ms = 12;
+  int64 long_break_ms = 13;
+  int32 long_break_after = 14; // sessions before a long break
 }
 
 // Room state
@@ -135,10 +139,15 @@ message ReconnectPayload {
 
 // Study session control (host only)
 message StudyActionPayload {
-  string action = 1;      // set_mode | set_duration | start | pause | reset | advance
+  string action = 1;      // set_mode | set_duration | set_pomodoro | start | pause | reset | advance
   string mode = 2;        // for set_mode: "pomodoro" | "timer" | "stopwatch"
   int64 duration_ms = 3;  // for set_duration
   int64 server_time = 4;
+  // Pomodoro config (set_pomodoro / used by advance + auto-advance):
+  int64 focus_ms = 5;
+  int64 break_ms = 6;
+  int64 long_break_ms = 7;
+  int32 long_break_after = 8;  // sessions before a long break
 }
 
 // Server -> Client messages

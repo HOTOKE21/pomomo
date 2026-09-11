@@ -138,6 +138,10 @@ function defaultStudy() {
     completedFocus: 0,
     revision: 0,
     finished: false,
+    focusMs: 25 * 60 * 1000,
+    breakMs: 5 * 60 * 1000,
+    longBreakMs: 15 * 60 * 1000,
+    longBreakAfter: 4,
   };
 }
 
@@ -197,6 +201,10 @@ function buildRoomState(room) {
       completedFocus: room.study.completedFocus,
       revision: room.study.revision,
       finished: !!room.study.finished,
+      focusMs: room.study.focusMs,
+      breakMs: room.study.breakMs,
+      longBreakMs: room.study.longBreakMs,
+      longBreakAfter: room.study.longBreakAfter,
     }),
   };
   if (room.currentTrack) state.currentTrack = room.currentTrack;
@@ -507,6 +515,32 @@ function handleStudyAction(socket, room, payload) {
   const remaining = studyRemainingMs(room);
 
   switch (payload.action) {
+    case 'set_pomodoro': {
+      // Per-phase pomodoro config: focus length, break length, long-break
+      // length and sessions-per-long-break. Only while not running.
+      if (!s.isRunning) {
+        const focusMs = toNum(payload.focusMs);
+        const breakMs = toNum(payload.breakMs);
+        const longBreakMs = toNum(payload.longBreakMs);
+        const longBreakAfter = toNum(payload.longBreakAfter);
+        if (focusMs > 0) s.focusMs = focusMs;
+        if (breakMs > 0) s.breakMs = breakMs;
+        if (longBreakMs > 0) s.longBreakMs = longBreakMs;
+        if (longBreakAfter > 0) s.longBreakAfter = longBreakAfter;
+        if (s.phase === 'focus') {
+          s.durationMs = s.focusMs;
+          s.baseRemainingMs = s.focusMs;
+        } else if (s.phase === 'long_break') {
+          s.durationMs = s.longBreakMs;
+          s.baseRemainingMs = s.longBreakMs;
+        } else {
+          s.durationMs = s.breakMs;
+          s.baseRemainingMs = s.breakMs;
+        }
+        s.anchorServerMs = 0;
+      }
+      break;
+    }
     case 'set_mode':
       if (payload.mode && ['pomodoro', 'timer', 'stopwatch'].includes(payload.mode)) {
         s.mode = payload.mode;
@@ -521,7 +555,7 @@ function handleStudyAction(socket, room, payload) {
           s.durationMs = 5 * 60 * 1000;
           s.baseRemainingMs = s.durationMs;
         } else {
-          s.durationMs = 25 * 60 * 1000;
+          s.durationMs = s.focusMs;
           s.baseRemainingMs = s.durationMs;
         }
       }
@@ -576,11 +610,11 @@ function handleStudyAction(socket, room, payload) {
       if (s.mode === 'pomodoro') {
         if (s.phase === 'focus') {
           s.completedFocus += 1;
-          s.phase = s.completedFocus % 4 === 0 ? 'long_break' : 'break';
-          s.durationMs = s.phase === 'long_break' ? 15 * 60 * 1000 : 5 * 60 * 1000;
+          s.phase = s.completedFocus % (s.longBreakAfter || 4) === 0 ? 'long_break' : 'break';
+          s.durationMs = s.phase === 'long_break' ? s.longBreakMs : s.breakMs;
         } else {
           s.phase = 'focus';
-          s.durationMs = 25 * 60 * 1000;
+          s.durationMs = s.focusMs;
         }
         s.baseRemainingMs = s.durationMs;
       } else if (s.mode === 'timer') {
@@ -858,11 +892,11 @@ setInterval(() => {
         if (s.mode === 'pomodoro') {
           if (s.phase === 'focus') {
             s.completedFocus += 1;
-            s.phase = s.completedFocus % 4 === 0 ? 'long_break' : 'break';
-            s.durationMs = s.phase === 'long_break' ? 15 * 60 * 1000 : 5 * 60 * 1000;
+            s.phase = s.completedFocus % (s.longBreakAfter || 4) === 0 ? 'long_break' : 'break';
+            s.durationMs = s.phase === 'long_break' ? s.longBreakMs : s.breakMs;
           } else {
             s.phase = 'focus';
-            s.durationMs = 25 * 60 * 1000;
+            s.durationMs = s.focusMs;
           }
           s.baseRemainingMs = s.durationMs;
         }
