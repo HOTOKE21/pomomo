@@ -142,6 +142,12 @@ function defaultStudy() {
     breakMs: 5 * 60 * 1000,
     longBreakMs: 15 * 60 * 1000,
     longBreakAfter: 4,
+    // Per-mode progress snapshots: switching modes saves the outgoing
+    // mode's state here and restores the incoming one, so a running
+    // pomodoro survives browsing to TIMER/STOPWATCH and back. All three
+    // modes effectively coexist (anchor math keeps running ones counting
+    // in real time even while another mode is on screen).
+    modes: {},
   };
 }
 
@@ -543,20 +549,41 @@ function handleStudyAction(socket, room, payload) {
     }
     case 'set_mode':
       if (payload.mode && ['pomodoro', 'timer', 'stopwatch'].includes(payload.mode)) {
-        s.mode = payload.mode;
-        s.isRunning = false;
-        s.anchorServerMs = 0;
-        s.phase = 'focus';
-        s.completedFocus = 0;
-        if (payload.mode === 'stopwatch') {
-          s.durationMs = 0;
-          s.baseRemainingMs = 0;
-        } else if (payload.mode === 'timer') {
-          s.durationMs = 5 * 60 * 1000;
-          s.baseRemainingMs = s.durationMs;
-        } else {
-          s.durationMs = s.focusMs;
-          s.baseRemainingMs = s.durationMs;
+        if (payload.mode !== s.mode) {
+          // Save the outgoing mode's full progress so nothing resets.
+          s.modes = s.modes || {};
+          s.modes[s.mode] = {
+            phase: s.phase,
+            isRunning: s.isRunning,
+            durationMs: s.durationMs,
+            baseRemainingMs: s.baseRemainingMs,
+            anchorServerMs: s.anchorServerMs,
+            completedFocus: s.completedFocus,
+            finished: !!s.finished,
+          };
+          const saved = s.modes[payload.mode];
+          if (saved) {
+            // Restore the target mode exactly where it left off
+            // (a running timer keeps counting via its anchor).
+            Object.assign(s, saved);
+          } else {
+            s.isRunning = false;
+            s.anchorServerMs = 0;
+            s.phase = 'focus';
+            s.completedFocus = 0;
+            s.finished = false;
+            if (payload.mode === 'stopwatch') {
+              s.durationMs = 0;
+              s.baseRemainingMs = 0;
+            } else if (payload.mode === 'timer') {
+              s.durationMs = 5 * 60 * 1000;
+              s.baseRemainingMs = s.durationMs;
+            } else {
+              s.durationMs = s.focusMs;
+              s.baseRemainingMs = s.durationMs;
+            }
+          }
+          s.mode = payload.mode;
         }
       }
       break;
@@ -907,6 +934,31 @@ setInterval(() => {
         // client recomputes from server time without user interaction.
         s.lastTickBroadcast = now;
         broadcastStudyState(room);
+      }
+    }
+    // Background modes: a snapshot left running (user browsed to another
+    // mode) still completes server-side — phase advance lands in the
+    // snapshot, so switching back shows the finished/advanced state.
+    for (const snap of Object.values(s.modes || {})) {
+      if (!snap.isRunning || !snap.anchorServerMs) continue;
+      const elapsed = now - snap.anchorServerMs;
+      const rem = Math.max(0, snap.baseRemainingMs - elapsed);
+      if (snap.mode !== 'stopwatch' && snap.phase !== undefined && rem <= 0 && snap.mode !== 'stopwatch') {
+        snap.baseRemainingMs = 0;
+        snap.isRunning = false;
+        snap.anchorServerMs = 0;
+        snap.finished = true;
+        if (snap.mode === 'pomodoro') {
+          if (snap.phase === 'focus') {
+            snap.completedFocus += 1;
+            snap.phase = snap.completedFocus % (s.longBreakAfter || 4) === 0 ? 'long_break' : 'break';
+            snap.durationMs = snap.phase === 'long_break' ? s.longBreakMs : s.breakMs;
+          } else {
+            snap.phase = 'focus';
+            snap.durationMs = s.focusMs;
+          }
+          snap.baseRemainingMs = snap.durationMs;
+        }
       }
     }
     if (room.users.size === 0 && room.lastEmptyAt && now - room.lastEmptyAt > ROOM_TTL_MS) {
